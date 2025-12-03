@@ -79,21 +79,16 @@ class SentimentBacktest:
         
         return None
     
-    def calculate_return(self, ticker, entry_date, holding_period_days=7, direction='LONG'):
-        """Calculate return for a long or short position."""
+    def calculate_return(self, ticker, entry_date, holding_period_days=7, direction='LONG', slippage_pct=0.1):
         try:
             sentiment_dt = datetime.strptime(entry_date, '%Y-%m-%d')
-
             today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            
             if sentiment_dt >= today:
                 return None
 
-            min_exit_dt = sentiment_dt + timedelta(days=holding_period_days + 3)
-            if min_exit_dt > today:
-                return None
-
-            start_date = (sentiment_dt - timedelta(days=7)).strftime('%Y-%m-%d')
-            end_date = (sentiment_dt + timedelta(days=holding_period_days + 7)).strftime('%Y-%m-%d')
+            start_date = (sentiment_dt - timedelta(days=10)).strftime('%Y-%m-%d')
+            end_date = (sentiment_dt + timedelta(days=max(holding_period_days * 2 + 10, 30))).strftime('%Y-%m-%d')
 
             df = self.fetch_price_data(ticker, start_date, end_date)
             if df is None or len(df) < 2:
@@ -105,24 +100,35 @@ class SentimentBacktest:
 
             sentiment_dt_norm = pd.to_datetime(sentiment_dt).tz_localize(None)
 
-            valid_entry = df[df.index > sentiment_dt_norm]
-            if valid_entry.empty:
+            entry_candidates = df[df.index > sentiment_dt_norm]
+            
+            if entry_candidates.empty:
                 return None
             
-            entry_actual_date = valid_entry.index[0]
-            entry_price = valid_entry.iloc[0]['Open']
+            entry_actual_date = entry_candidates.index[0]
+            entry_price = entry_candidates.iloc[0]['Open']
+            
+            if direction.upper() == 'LONG':
+                entry_price = entry_price * (1 + slippage_pct / 100)
+            else:
+                entry_price = entry_price * (1 - slippage_pct / 100)
 
-            if (entry_actual_date - sentiment_dt_norm).days > 7:
-                return None
-
-            entry_position = valid_entry.index.get_loc(entry_actual_date)
-            remaining_data = df[df.index > entry_actual_date]
+            entry_idx = df.index.get_loc(entry_actual_date)
             
-            if len(remaining_data) < holding_period_days:
+            if entry_idx + holding_period_days >= len(df):
                 return None
             
-            exit_actual_date = remaining_data.index[holding_period_days - 1]
-            exit_price = remaining_data.iloc[holding_period_days - 1]['Close']
+            exit_actual_date = df.index[entry_idx + holding_period_days]
+            
+            if exit_actual_date > today:
+                return None
+            
+            exit_price = df.iloc[entry_idx + holding_period_days]['Close']
+            
+            if direction.upper() == 'LONG':
+                exit_price = exit_price * (1 - slippage_pct / 100)
+            else:
+                exit_price = exit_price * (1 + slippage_pct / 100)
 
             if direction.upper() == 'LONG':
                 return_pct = (exit_price - entry_price) / entry_price * 100
@@ -136,7 +142,8 @@ class SentimentBacktest:
 
     
     def backtest_period(self, start_date=None, end_date=None, 
-                       holding_period_days=7, min_score_threshold=1, weight_by_score=True, debug=False):
+                       holding_period_days=7, min_score_threshold=1, weight_by_score=True, 
+                       slippage_pct=0.1, commission_pct=0.0, debug=False, log_failures=False):
         """
         Run backtest and return clean data structure.
         Returns dict with trades and daily returns ready for JSON export.
@@ -162,7 +169,8 @@ class SentimentBacktest:
         
         results = {
             'trades': [],
-            'daily_returns': []
+            'daily_returns': [],
+            'failed_trades': []
         }
         
         print(f"\n{'='*80}")
@@ -198,9 +206,13 @@ class SentimentBacktest:
             
             # Process LONG positions
             for ticker, score, _ in long_positions:
-                result = self.calculate_return(ticker, date, holding_period_days, 'LONG')
+                result = self.calculate_return(ticker, date, holding_period_days, 'LONG', slippage_pct)
                 if result is not None:
                     return_pct, entry_price, exit_price = result
+                    
+                    # Apply commission
+                    return_pct -= (2 * commission_pct)
+                    
                     results['trades'].append({
                         'date': date,
                         'ticker': ticker,
@@ -216,14 +228,26 @@ class SentimentBacktest:
                     if debug:
                         print(f"Trade: {ticker} LONG @ ${entry_price:.2f} → ${exit_price:.2f} = {return_pct:+.2f}%")
                 else:
+                    if log_failures:
+                        results['failed_trades'].append({
+                            'date': date,
+                            'ticker': ticker,
+                            'direction': 'LONG',
+                            'score': float(score),
+                            'reason': 'price_data_unavailable'
+                        })
                     if debug:
                         print(f"Failed to calculate return for {ticker} on {date}")
             
             # Process SHORT positions
             for ticker, score, _ in short_positions:
-                result = self.calculate_return(ticker, date, holding_period_days, 'SHORT')
+                result = self.calculate_return(ticker, date, holding_period_days, 'SHORT', slippage_pct)
                 if result is not None:
                     return_pct, entry_price, exit_price = result
+                    
+                    # Apply commission 
+                    return_pct -= (2 * commission_pct)
+                    
                     results['trades'].append({
                         'date': date,
                         'ticker': ticker,
@@ -235,22 +259,25 @@ class SentimentBacktest:
                     })
                     day_short_returns.append(return_pct)
                     day_short_weights.append(score if weight_by_score else 1)
+                else:
+                    if log_failures:
+                        results['failed_trades'].append({
+                            'date': date,
+                            'ticker': ticker,
+                            'direction': 'SHORT',
+                            'score': float(score),
+                            'reason': 'price_data_unavailable'
+                        })
             
-            # Calculate daily return (score-weighted)
+            # Calculate daily return 
             if not day_long_returns and not day_short_returns:
                 continue
             
-            long_ret = (sum(r * w for r, w in zip(day_long_returns, day_long_weights)) / 
-                       sum(day_long_weights)) if day_long_weights else 0
-            short_ret = (sum(r * w for r, w in zip(day_short_returns, day_short_weights)) / 
-                        sum(day_short_weights)) if day_short_weights else 0
+            all_returns = day_long_returns + day_short_returns
+            all_weights = day_long_weights + day_short_weights
             
-            total_long_weight = sum(day_long_weights) if day_long_weights else 0
-            total_short_weight = sum(day_short_weights) if day_short_weights else 0
-            total_weight = total_long_weight + total_short_weight
-            
-            if total_weight > 0:
-                daily_return = (long_ret * total_long_weight + short_ret * total_short_weight) / total_weight
+            if all_weights:
+                daily_return = sum(r * w for r, w in zip(all_returns, all_weights)) / sum(all_weights)
             else:
                 daily_return = 0
             
@@ -263,7 +290,9 @@ class SentimentBacktest:
         
         print(f"\nCompleted: {len(results['trades'])} trades, {len(results['daily_returns'])} days")
         
-        # Calculate and add summary statistics
+        if log_failures and results['failed_trades']:
+            print(f"Failed trades: {len(results['failed_trades'])} (missing price data)")
+        
         results['summary'] = self.calculate_summary_stats(results)
         
         return results
@@ -387,7 +416,7 @@ class SentimentBacktest:
 
 if __name__ == "__main__":
     # Configuration
-    HOLDING_PERIOD = 1  
+    HOLDING_PERIOD = 1
     MIN_SCORE_THRESHOLD = 1
 
     
@@ -396,6 +425,8 @@ if __name__ == "__main__":
         name='r/wallstreetbets'
     )
     wsb_results = wsb_backtest.backtest_period(
+        slippage_pct=0.0,
+        commission_pct=0.0,
         weight_by_score=False,
         holding_period_days=HOLDING_PERIOD,
         min_score_threshold=MIN_SCORE_THRESHOLD,
@@ -408,6 +439,8 @@ if __name__ == "__main__":
         name='r/Stocks Daily Discussion'
     )
     stocks_results = stocks_backtest.backtest_period(
+        slippage_pct=0.0,
+        commission_pct=0.0,
         weight_by_score=False,
         holding_period_days=HOLDING_PERIOD,
         min_score_threshold=MIN_SCORE_THRESHOLD,
