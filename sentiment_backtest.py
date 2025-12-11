@@ -427,7 +427,7 @@ if __name__ == "__main__":
     wsb_results = wsb_backtest.backtest_period(
         slippage_pct=0.0,
         commission_pct=0.0,
-        weight_by_score=False,
+        weight_by_score=True,
         holding_period_days=HOLDING_PERIOD,
         min_score_threshold=MIN_SCORE_THRESHOLD,
         debug=False
@@ -441,7 +441,7 @@ if __name__ == "__main__":
     stocks_results = stocks_backtest.backtest_period(
         slippage_pct=0.0,
         commission_pct=0.0,
-        weight_by_score=False,
+        weight_by_score=True,
         holding_period_days=HOLDING_PERIOD,
         min_score_threshold=MIN_SCORE_THRESHOLD,
         debug=False
