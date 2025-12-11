@@ -26,7 +26,11 @@ class SentimentBacktest:
         for date, entries in self.data.items():
             for entry in entries:
                 tickers = entry.get('tickers', [])
-                score = max(0, entry.get('score', 0))
+                raw_score = entry.get('score', 0)
+                try:
+                    score = float(raw_score)
+                except Exception:
+                    score = 0.0
                 sentiment = entry.get('classification', 'neutral')
                 for ticker in tickers:
                     if sentiment == 'positive':
@@ -36,7 +40,7 @@ class SentimentBacktest:
         
         return dict(daily_sentiment)
     
-    def get_positions_by_day(self, date, min_score_threshold=1):
+    def get_positions_by_day(self, date, min_score_threshold=1, min_activity_threshold=0):
         """Get positions by day."""
         if date not in self.ticker_sentiment:
             return [], []
@@ -47,6 +51,11 @@ class SentimentBacktest:
         
         for ticker, data in sentiment_data.items():
             net_sentiment = data['long_score'] - data['short_score']
+            total_activity = data['long_score'] + data['short_score']
+            
+            # Require a minimum amount of activity to avoid noisy cancels
+            if total_activity < min_activity_threshold:
+                continue
             
             if net_sentiment >= min_score_threshold:
                 long_positions.append((ticker, net_sentiment, 'LONG'))
@@ -58,7 +67,7 @@ class SentimentBacktest:
         
         return long_positions, short_positions
     
-    def fetch_price_data(self, ticker, start_date, end_date, max_retries=5):
+    def fetch_price_data(self, ticker, start_date, end_date, max_retries=3):
         """Fetch historical price data for a ticker."""
         for attempt in range(max_retries):
             try:
@@ -78,84 +87,91 @@ class SentimentBacktest:
                 time.sleep(0.5)
         
         return None
-    
-    def calculate_return(self, ticker, entry_date, holding_period_days=7, direction='LONG', slippage_pct=0.1):
-        try:
-            sentiment_dt = datetime.strptime(entry_date, '%Y-%m-%d')
-            today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-            
-            if sentiment_dt >= today:
-                return None
 
-            start_date = (sentiment_dt - timedelta(days=10)).strftime('%Y-%m-%d')
-            end_date = (sentiment_dt + timedelta(days=max(holding_period_days * 2 + 10, 30))).strftime('%Y-%m-%d')
-
+    def build_price_cache(self, tickers, start_date, end_date):
+        """Fetch once per ticker for the full window and cache."""
+        cache = {}
+        for ticker in tickers:
             df = self.fetch_price_data(ticker, start_date, end_date)
-            if df is None or len(df) < 2:
-                return None
-
+            if df is None or df.empty:
+                continue
             df.index = pd.to_datetime(df.index)
             if df.index.tz is not None:
                 df.index = df.index.tz_localize(None)
+            cache[ticker] = df
+        return cache
+    
+    def calculate_return(
+        self,
+        ticker,
+        sentiment_date,
+        direction="LONG",
+        holding_days=1,
+        price_df=None,
+    ):
+        try:
+            sentiment_dt = datetime.strptime(sentiment_date, "%Y-%m-%d")
+            today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+            if sentiment_dt >= today:
+                return None
+
+            # Fetch around the sentiment date to find the next trading session
+            if price_df is None or price_df.empty:
+                return None
 
             sentiment_dt_norm = pd.to_datetime(sentiment_dt).tz_localize(None)
 
-            entry_candidates = df[df.index > sentiment_dt_norm]
-            
+            # Next trading day after the sentiment timestamp
+            entry_candidates = price_df[price_df.index > sentiment_dt_norm]
             if entry_candidates.empty:
                 return None
-            
+
             entry_actual_date = entry_candidates.index[0]
-            entry_price = entry_candidates.iloc[0]['Open']
-            
-            if direction.upper() == 'LONG':
-                entry_price = entry_price * (1 + slippage_pct / 100)
-            else:
-                entry_price = entry_price * (1 - slippage_pct / 100)
-
-            entry_idx = df.index.get_loc(entry_actual_date)
-            
-            if entry_idx + holding_period_days >= len(df):
+            if entry_actual_date >= today:
                 return None
-            
-            exit_actual_date = df.index[entry_idx + holding_period_days]
-            
-            if exit_actual_date > today:
-                return None
-            
-            exit_price = df.iloc[entry_idx + holding_period_days]['Close']
-            
-            if direction.upper() == 'LONG':
-                exit_price = exit_price * (1 - slippage_pct / 100)
-            else:
-                exit_price = exit_price * (1 + slippage_pct / 100)
 
-            if direction.upper() == 'LONG':
+            entry_idx = price_df.index.get_loc(entry_actual_date)
+            exit_idx = entry_idx + max(holding_days - 1, 0)
+            if exit_idx >= len(price_df):
+                return None
+
+            exit_actual_date = price_df.index[exit_idx]
+            if exit_actual_date >= today:
+                return None
+
+            entry_price = float(price_df.iloc[entry_idx]["Open"])
+            exit_price = float(price_df.iloc[exit_idx]["Close"])
+
+            if direction.upper() == "LONG":
                 return_pct = (exit_price - entry_price) / entry_price * 100
             else:
                 return_pct = (entry_price - exit_price) / entry_price * 100
 
-            return (return_pct, entry_price, exit_price)
+            return (return_pct, entry_price, exit_price, exit_actual_date.strftime("%Y-%m-%d"))
 
         except Exception as e:
             return None
 
     
-    def backtest_period(self, start_date=None, end_date=None, 
-                       holding_period_days=7, min_score_threshold=1, weight_by_score=True, 
-                       slippage_pct=0.1, commission_pct=0.0, debug=False, log_failures=False):
+    def backtest_period(self, start_date=None, end_date=None,
+                       min_score_threshold=1, min_activity_threshold=0,
+                       weight_by_score=True,
+                       holding_days=1, debug=False, log_failures=False):
         """
         Run backtest and return clean data structure.
         Returns dict with trades and daily returns ready for JSON export.
+        Buys (LONG) at next trading day's open for positive sentiment; SHORT otherwise.
+        Exits after holding_days on market close.
         """
         # Get date range
         dates = sorted(self.ticker_sentiment.keys())
         if not dates:
             return {"error": "No data available"}
         
-        # Calculate max backtest date
+        # Calculate max backtest date (need at least one full next-trading-day bar)
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        max_backtest_date = (today - timedelta(days=holding_period_days + 2)).strftime('%Y-%m-%d')
+        max_backtest_date = (today - timedelta(days=holding_days)).strftime('%Y-%m-%d')
         
         if start_date is None:
             start_date = dates[0]
@@ -166,6 +182,21 @@ class SentimentBacktest:
         
         # Filter dates in range
         test_dates = [d for d in dates if start_date <= d <= end_date]
+
+        # Collect all tickers in range and prefetch prices once
+        tickers_in_range = set()
+        for d in test_dates:
+            for t in self.ticker_sentiment.get(d, {}):
+                tickers_in_range.add(t)
+
+        if debug:
+            print(f"Prefetching prices for {len(tickers_in_range)} tickers between {start_date} and {end_date}")
+
+        price_cache = self.build_price_cache(
+            tickers_in_range,
+            (pd.to_datetime(start_date) - timedelta(days=5)).strftime("%Y-%m-%d"),
+            (pd.to_datetime(end_date) + timedelta(days=holding_days + 5)).strftime("%Y-%m-%d"),
+        )
         
         results = {
             'trades': [],
@@ -176,10 +207,10 @@ class SentimentBacktest:
         print(f"\n{'='*80}")
         print(f"Sentiment-Driven Backtest: {self.name}")
         print(f"Period: {start_date} to {end_date}")
-        print(f"Holding Period: {holding_period_days} days")
         
-        print(f"Strategy: NET sentiment (positive=LONG, negative=SHORT)")
-        print(f"Min threshold: |net_score| >= {min_score_threshold}")
+        print(f"Strategy: Next-day open entry, close after {holding_days} day(s) at market close (positive=LONG, negative=SHORT)")
+        print(f"Min net threshold: |net_score| >= {min_score_threshold}")
+        print(f"Min activity threshold: total_score >= {min_activity_threshold}")
         print(f"Position sizing: Proportional to net sentiment score" if weight_by_score else "Position sizing: Equal weight")
         
         print(f"Total dates to process: {len(test_dates)}")
@@ -191,7 +222,11 @@ class SentimentBacktest:
             if i % 10 == 0:
                 print(f"Progress: {i}/{len(test_dates)}")
                 
-            long_positions, short_positions = self.get_positions_by_day(date, min_score_threshold)
+            long_positions, short_positions = self.get_positions_by_day(
+                date,
+                min_score_threshold,
+                min_activity_threshold
+            )
             
             if debug:
                 print(f"Date: {date}")
@@ -204,17 +239,23 @@ class SentimentBacktest:
             day_long_returns, day_long_weights = [], []
             day_short_returns, day_short_weights = [], []
             
+            day_trade_date = None
+
             # Process LONG positions
             for ticker, score, _ in long_positions:
-                result = self.calculate_return(ticker, date, holding_period_days, 'LONG', slippage_pct)
+                result = self.calculate_return(
+                    ticker,
+                    date,
+                    'LONG',
+                    holding_days,
+                    price_cache.get(ticker)
+                )
                 if result is not None:
-                    return_pct, entry_price, exit_price = result
-                    
-                    # Apply commission
-                    return_pct -= (2 * commission_pct)
+                    return_pct, entry_price, exit_price, trade_date = result
+                    day_trade_date = day_trade_date or trade_date
                     
                     results['trades'].append({
-                        'date': date,
+                        'date': trade_date,
                         'ticker': ticker,
                         'direction': 'LONG',
                         'score': float(score),
@@ -241,15 +282,19 @@ class SentimentBacktest:
             
             # Process SHORT positions
             for ticker, score, _ in short_positions:
-                result = self.calculate_return(ticker, date, holding_period_days, 'SHORT', slippage_pct)
+                result = self.calculate_return(
+                    ticker,
+                    date,
+                    'SHORT',
+                    holding_days,
+                    price_cache.get(ticker)
+                )
                 if result is not None:
-                    return_pct, entry_price, exit_price = result
-                    
-                    # Apply commission 
-                    return_pct -= (2 * commission_pct)
+                    return_pct, entry_price, exit_price, trade_date = result
+                    day_trade_date = day_trade_date or trade_date
                     
                     results['trades'].append({
-                        'date': date,
+                        'date': trade_date,
                         'ticker': ticker,
                         'direction': 'SHORT',
                         'score': float(score),
@@ -281,8 +326,9 @@ class SentimentBacktest:
             else:
                 daily_return = 0
             
+            # Daily return keyed to trade date (next trading session)
             results['daily_returns'].append({
-                'date': date,
+                'date': day_trade_date or date,
                 'return': float(daily_return),
                 'num_long': len(day_long_returns),
                 'num_short': len(day_short_returns)
@@ -298,28 +344,14 @@ class SentimentBacktest:
         return results
     
     def calculate_summary_stats(self, results):
-        """Calculate summary statistics from backtest results."""
+        """Minimal summary statistics."""
         if not results['trades']:
             return {
                 'total_trades': 0,
                 'long_trades': 0,
                 'short_trades': 0,
-                'successful_long': 0,
-                'successful_short': 0,
-                'long_win_rate': 0.0,
-                'short_win_rate': 0.0,
-                'overall_win_rate': 0.0,
                 'avg_return': 0.0,
-                'avg_long_return': 0.0,
-                'avg_short_return': 0.0,
-                'median_return': 0.0,
-                'std_return': 0.0,
-                'min_return': 0.0,
-                'max_return': 0.0,
                 'total_return': 0.0,
-                'avg_daily_return': 0.0,
-                'sharpe_ratio': 0.0,
-                'sharpe_ratio_annualized': 0.0,
                 'num_trading_days': 0
             }
         
@@ -327,51 +359,15 @@ class SentimentBacktest:
         long_trades = [t for t in results['trades'] if t['direction'] == 'LONG']
         short_trades = [t for t in results['trades'] if t['direction'] == 'SHORT']
         
-        long_returns = [t['return'] for t in long_trades]
-        short_returns = [t['return'] for t in short_trades]
-        
-        successful_long = len([r for r in long_returns if r > 0])
-        successful_short = len([r for r in short_returns if r > 0])
-        successful_total = len([r for r in all_returns if r > 0])
-        
         daily_returns = [d['return'] for d in results['daily_returns']]
-        
-        if daily_returns and np.std(daily_returns) > 0:
-            daily_returns_decimal = np.array(daily_returns) / 100.0
-            sharpe_ratio = float(daily_returns_decimal.mean() / daily_returns_decimal.std())
-            sharpe_ratio_annualized = sharpe_ratio * np.sqrt(252)
-        else:
-            sharpe_ratio = 0.0
-            sharpe_ratio_annualized = 0.0
-        
-        if daily_returns:
-            cumulative_return = 1.0
-            for ret in daily_returns:
-                cumulative_return *= (1 + ret / 100.0)
-            total_return = (cumulative_return - 1.0) * 100.0
-        else:
-            total_return = 0.0
-        
+        total_return = float(np.sum(daily_returns)) if daily_returns else 0.0
+
         summary = {
             'total_trades': len(all_returns),
             'long_trades': len(long_trades),
             'short_trades': len(short_trades),
-            'successful_long': successful_long,
-            'successful_short': successful_short,
-            'long_win_rate': (successful_long / len(long_returns) * 100) if long_returns else 0.0,
-            'short_win_rate': (successful_short / len(short_returns) * 100) if short_returns else 0.0,
-            'overall_win_rate': (successful_total / len(all_returns) * 100) if all_returns else 0.0,
             'avg_return': float(np.mean(all_returns)) if all_returns else 0.0,
-            'avg_long_return': float(np.mean(long_returns)) if long_returns else 0.0,
-            'avg_short_return': float(np.mean(short_returns)) if short_returns else 0.0,
-            'median_return': float(np.median(all_returns)) if all_returns else 0.0,
-            'std_return': float(np.std(all_returns)) if all_returns else 0.0,
-            'min_return': float(np.min(all_returns)) if all_returns else 0.0,
-            'max_return': float(np.max(all_returns)) if all_returns else 0.0,
-            'total_return': float(total_return),
-            'avg_daily_return': float(np.mean(daily_returns)) if daily_returns else 0.0,
-            'sharpe_ratio': sharpe_ratio,
-            'sharpe_ratio_annualized': sharpe_ratio_annualized,
+            'total_return': total_return,
             'num_trading_days': len(daily_returns)
         }
         
@@ -390,68 +386,53 @@ class SentimentBacktest:
         print(f"Total Trades: {summary['total_trades']}")
         print(f"  Long Positions: {summary['long_trades']}")
         print(f"  Short Positions: {summary['short_trades']}")
-        print(f"\nWin Rates:")
-        print(f"  Overall: {summary['overall_win_rate']:.2f}%")
-        print(f"  Long:    {summary['long_win_rate']:.2f}% ({summary['successful_long']}/{summary['long_trades']})")
-        print(f"  Short:   {summary['short_win_rate']:.2f}% ({summary['successful_short']}/{summary['short_trades']})")
         
         print(f"\nRETURN STATISTICS")
         print(f"{'─'*80}")
         print(f"Average Return per Trade: {summary['avg_return']:.2f}%")
-        print(f"  Long Positions:  {summary['avg_long_return']:.2f}%")
-        print(f"  Short Positions: {summary['avg_short_return']:.2f}%")
-        print(f"Median Return: {summary['median_return']:.2f}%")
-        print(f"Std Deviation: {summary['std_return']:.2f}%")
-        print(f"Min/Max Return: {summary['min_return']:.2f}% / {summary['max_return']:.2f}%")
-        
-        print(f"\nPORTFOLIO PERFORMANCE")
-        print(f"{'─'*80}")
-        print(f"Total Return: {summary['total_return']:.2f}%")
-        print(f"Average Daily Return: {summary['avg_daily_return']:.2f}%")
+        print(f"Total Return (avg daily %): {summary['total_return']:.2f}%")
         print(f"Trading Days: {summary['num_trading_days']}")
-        print(f"Sharpe Ratio (Daily): {summary['sharpe_ratio']:.3f}")
-        print(f"Sharpe Ratio (Annualized): {summary['sharpe_ratio_annualized']:.3f}")
 
 
 
 if __name__ == "__main__":
     # Configuration
-    HOLDING_PERIOD = 1
     MIN_SCORE_THRESHOLD = 1
+    HOLDING_DAYS = 1
+    MIN_ACTIVITY_THRESHOLD = 0
 
     
     wsb_backtest = SentimentBacktest(
-        corpus_file='wsb_daily_moves_tickers.json',
+        corpus_file='data/wsb_daily_moves_tickers.json',
         name='r/wallstreetbets'
     )
     wsb_results = wsb_backtest.backtest_period(
-        slippage_pct=0.0,
-        commission_pct=0.0,
         weight_by_score=True,
-        holding_period_days=HOLDING_PERIOD,
         min_score_threshold=MIN_SCORE_THRESHOLD,
+        min_activity_threshold=MIN_ACTIVITY_THRESHOLD,
+        holding_days=HOLDING_DAYS,
         debug=False
     )
     wsb_backtest.print_results(wsb_results)
     
     stocks_backtest = SentimentBacktest(
-        corpus_file='stocks_daily_discussion.json',
+        corpus_file='data/stocks_daily_discussion.json',
         name='r/Stocks Daily Discussion'
     )
     stocks_results = stocks_backtest.backtest_period(
-        slippage_pct=0.0,
-        commission_pct=0.0,
         weight_by_score=True,
-        holding_period_days=HOLDING_PERIOD,
         min_score_threshold=MIN_SCORE_THRESHOLD,
+        min_activity_threshold=MIN_ACTIVITY_THRESHOLD,
+        holding_days=HOLDING_DAYS,
         debug=False
     )
     stocks_backtest.print_results(stocks_results)
     
     output = {
         'config': {
-            'holding_period': HOLDING_PERIOD,
-            'min_score': MIN_SCORE_THRESHOLD
+            'min_score': MIN_SCORE_THRESHOLD,
+            'holding_days': HOLDING_DAYS,
+            'min_activity': MIN_ACTIVITY_THRESHOLD
         },
         'wsb': wsb_results,
         'stocks': stocks_results
