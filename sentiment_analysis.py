@@ -6,6 +6,7 @@ with open("data/wsb_lexicon.json", "r", encoding="utf-8") as f:
 
 
 def classify_sentiment(text, use_wsb_lexicon=True):
+    """Classify the sentiment of the text using the VADER sentiment analyzer."""
     analyzer = SentimentIntensityAnalyzer()
 
     # Add custom WSB lexicon
@@ -25,20 +26,15 @@ def classify_sentiment(text, use_wsb_lexicon=True):
     scores["classification"] = classification
     return scores
 
-
-
-if __name__ == "__main__":
-    # Example usage of the classify_sentiment function
+def run_example():
     print("=" * 80)
     print("VADER Sentiment Classification with WSB Lexicon")
     print("=" * 80)
     
     wsb_examples = [
-
         "Bro $NUAI is ripping. Bought in at $0,90 and it's going parabolic in PM. Lmao.",
         "About to short these Korean Fried Chicken stocks. what is a korea",
         "grandma just died. I YOLO'd my interitence into NVDA. NVDA to the moon! 🚀🚀🚀 Diamond hands baby! 💎🙌",
-
     ]
 
     for text in wsb_examples:
@@ -50,3 +46,7 @@ if __name__ == "__main__":
         print(f"    Enhanced -> Lexicon {wsb_result['classification'].upper():8} (compound: {wsb_result['compound']:+.3f})")
 
         print()
+
+
+if __name__ == "__main__":
+    run_example()
