@@ -10,6 +10,7 @@ class SentimentBacktest:
         self.name = name
         with open(corpus_file, 'r') as f:
             self.data = json.load(f)
+        # this is here because WTF is a valid ticker and to avoid re scraping
         self.excluded_tickers = {'WTF'}
         self.ticker_sentiment = self._calculate_daily_sentiment_scores()
         
@@ -45,6 +46,7 @@ class SentimentBacktest:
             net_sentiment = data['long_score'] - data['short_score']
             total_activity = data['long_score'] + data['short_score']
             
+            # skip if total activity(upvotes - downvotes) is less than the minimum
             if total_activity < min_activity:
                 continue
             
@@ -53,6 +55,7 @@ class SentimentBacktest:
             elif net_sentiment <= -min_score:
                 short_positions.append((ticker, abs(net_sentiment)))
         
+        # sort by net sentiment in descending order
         long_positions.sort(key=lambda x: x[1], reverse=True)
         short_positions.sort(key=lambda x: x[1], reverse=True)
         
@@ -64,6 +67,7 @@ class SentimentBacktest:
             df = yf.Ticker(ticker).history(start=start_date, end=end_date, auto_adjust=True, actions=False)
             if df.empty:
                 return None
+            # remove timezone for safety
             df.index = pd.to_datetime(df.index).tz_localize(None)
             return df
         except:
@@ -83,6 +87,7 @@ class SentimentBacktest:
         if price_df is None:
             return None
             
+        # remove timezone for safety
         sentiment_dt = pd.to_datetime(sentiment_date).tz_localize(None)
         today = pd.Timestamp.now().normalize()
 
@@ -91,11 +96,12 @@ class SentimentBacktest:
         if entry_candidates.empty:
             return None
 
+        # get the first entry date after the sentiment date
         entry_date = entry_candidates.index[0]
         entry_idx = price_df.index.get_loc(entry_date)
         exit_idx = entry_idx + holding_days - 1
         
-        # Check exit date exists and is in the past (no unrealized gains)
+        # check if exit date exists and is in the past (no unrealized gains)
         if exit_idx >= len(price_df):
             return None
             
@@ -152,6 +158,7 @@ class SentimentBacktest:
             day_weights = []
             day_trade_date = None
 
+            # loop through long positions
             for ticker, score in long_positions:
                 result = self.calculate_return(ticker, date, 'LONG', holding_days, price_cache.get(ticker))
                 
@@ -170,6 +177,7 @@ class SentimentBacktest:
                     day_returns.append(return_pct)
                     day_weights.append(score if weight_by_score else 1)
             
+            # loop through short positions
             for ticker, score in short_positions:
                 result = self.calculate_return(ticker, date, 'SHORT', holding_days, price_cache.get(ticker))
                 

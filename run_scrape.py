@@ -95,7 +95,7 @@ def scrape_subreddit(config):
 
     print(f"Searching for {config['target_count']} posts: {config['name']}")
 
-    for request_num in range(config.get("max_requests", 50)):
+    for _ in range(config.get("max_requests", 50)):
         if found >= config["target_count"]:
             break
 
@@ -119,6 +119,7 @@ def scrape_subreddit(config):
             print("No more posts available")
             break
 
+        # loop through posts
         for child in posts:
             post = child["data"]
             if not config["is_target_post"](post):
