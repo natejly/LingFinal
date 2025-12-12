@@ -14,6 +14,7 @@ class SentimentBacktest:
         self.ticker_sentiment = self._calculate_daily_sentiment_scores()
         
     def _calculate_daily_sentiment_scores(self):
+        """Helper function to calculate daily sentiment scores."""
         daily_sentiment = defaultdict(lambda: defaultdict(lambda: {'long_score': 0, 'short_score': 0}))
         
         for date, entries in self.data.items():
@@ -33,6 +34,7 @@ class SentimentBacktest:
         return dict(daily_sentiment)
     
     def get_positions_by_day(self, date, min_score=1, min_activity=0):
+        """Helper function to get positions by day."""
         if date not in self.ticker_sentiment:
             return [], []
         
@@ -57,6 +59,7 @@ class SentimentBacktest:
         return long_positions, short_positions
     
     def fetch_price_data(self, ticker, start_date, end_date):
+        """Helper function to fetch price data."""
         try:
             df = yf.Ticker(ticker).history(start=start_date, end=end_date, auto_adjust=True, actions=False)
             if df.empty:
@@ -67,6 +70,7 @@ class SentimentBacktest:
             return None
 
     def build_price_cache(self, tickers, start_date, end_date):
+        """Helper function to build price cache."""
         cache = {}
         for ticker in tickers:
             df = self.fetch_price_data(ticker, start_date, end_date)
@@ -75,6 +79,7 @@ class SentimentBacktest:
         return cache
     
     def calculate_return(self, ticker, sentiment_date, direction, holding_days, price_df):
+        """Helper function to calculate return."""
         if price_df is None:
             return None
             
@@ -110,6 +115,7 @@ class SentimentBacktest:
     
     def backtest_period(self, start_date=None, end_date=None, min_score=1, 
                        min_activity=0, weight_by_score=True, holding_days=1):
+        """Run the backtest."""
         dates = sorted(self.ticker_sentiment.keys())
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         
@@ -194,6 +200,7 @@ class SentimentBacktest:
         return results
     
     def _calculate_summary(self, results):
+        """Helper function to calculate summary."""
         if not results['trades']:
             return {'total_trades': 0, 'avg_return': 0.0, 'total_return': 0.0}
         
@@ -210,6 +217,7 @@ class SentimentBacktest:
         }
     
     def print_results(self, results):
+        """Print the results."""
         s = results['summary']
         print(f"\n{'='*60}")
         print(f"RESULTS: {self.name}")

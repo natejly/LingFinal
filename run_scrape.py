@@ -202,5 +202,7 @@ def scrape_wsb(num_moves_posts=5):
     scrape_subreddit(config)
 
 if __name__ == "__main__":
-    # scrape_wsb(num_moves_posts=500)
+    # scraping was done one at a time to avoid api rate limiting
+    # ie comment one of the function calls to scrape one at a time
+    scrape_wsb(num_moves_posts=500)
     scrape_stocks_daily(num_discussion_posts=500)
