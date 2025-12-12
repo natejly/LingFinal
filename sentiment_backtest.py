@@ -148,6 +148,7 @@ class SentimentBacktest:
 
             for ticker, score in long_positions:
                 result = self.calculate_return(ticker, date, 'LONG', holding_days, price_cache.get(ticker))
+                
                 if result:
                     return_pct, entry_price, exit_price, trade_date = result
                     day_trade_date = day_trade_date or trade_date
@@ -165,6 +166,7 @@ class SentimentBacktest:
             
             for ticker, score in short_positions:
                 result = self.calculate_return(ticker, date, 'SHORT', holding_days, price_cache.get(ticker))
+                
                 if result:
                     return_pct, entry_price, exit_price, trade_date = result
                     day_trade_date = day_trade_date or trade_date

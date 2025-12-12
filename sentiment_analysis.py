@@ -4,7 +4,6 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 with open("data/wsb_lexicon.json", "r", encoding="utf-8") as f:
     WSB_LEXICON = json.load(f)
 
-
 def classify_sentiment(text, use_wsb_lexicon=True):
     """Classify the sentiment of the text using the VADER sentiment analyzer."""
     analyzer = SentimentIntensityAnalyzer()
@@ -46,7 +45,6 @@ def run_example():
         print(f"    Enhanced -> Lexicon {wsb_result['classification'].upper():8} (compound: {wsb_result['compound']:+.3f})")
 
         print()
-
 
 if __name__ == "__main__":
     run_example()

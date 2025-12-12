@@ -21,7 +21,6 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; RedditCorpusScraper/1.0)"}
 DEFAULT_TIMEOUT = 10
 MAX_POSTS_PER_REQUEST = 100
 
-
 def fetch_json(url, params):
     """Make a GET request and return parsed JSON, or {} on failure."""
     try:
@@ -38,7 +37,6 @@ def fetch_json(url, params):
     except Exception as e:
         print(f"Request failed for {url}: {e}")
         return {}
-
 
 def get_comments(post_permalink):
     """Fetch all comments for a post."""
@@ -66,18 +64,11 @@ def get_comments(post_permalink):
     extract(data[1]["data"].get("children", []))
     return comments
 
-
 def extract_tickers(text):
-    """
-    A token is a ticker if:
-    - It starts with '$' and is 1-5 uppercase letters, or
-    - It is an ALL-CAPS word (1-5 letters) that is space-bounded
-      in the text and exists in the NASDAQ symbol list.
-    One pass per comment.
-    """
+    """Extract tickers from text. """
     tickers = set(re.findall(r"\$([A-Z]{1,5})\b", text))
 
-    # Match ALL-CAPS tokens directly from the original text (space/punct bounded)
+    # Match caps tokens directly from the original text
     for token in re.findall(r"(?<![A-Za-z0-9])([A-Z]{1,5})(?![A-Za-z0-9])", text):
         if token in tickers:
             continue
@@ -85,7 +76,6 @@ def extract_tickers(text):
             tickers.add(token)
 
     return list(tickers)
-
 
 def save_corpus(data, filename):
     """Sort by timestamp and save to JSON."""
@@ -96,7 +86,6 @@ def save_corpus(data, filename):
         json.dump(data, f, indent=2, ensure_ascii=False)
 
     print(f"Saved {sum(len(v) for v in data.values())} entries to {filename}")
-
 
 def scrape_subreddit(config):
     """Generic scraper for subreddit search threads."""
@@ -158,13 +147,13 @@ def scrape_subreddit(config):
                     }
                 )
 
-            # Autosave after each processed target post to avoid data loss mid-run
+            # Autosave 
             save_corpus(corpus, config["output_file"])
 
             if found >= config["target_count"]:
                 break
-
-            time.sleep(config.get("sleep_between_posts", 1.0))  # API timeout so we don't get banned
+            # API timeout so we don't get banned
+            time.sleep(config.get("sleep_between_posts", 1.0))  
 
         if found < config["target_count"] and after:
             print(f"Found {found} so far, fetching more posts...")
@@ -176,20 +165,15 @@ def scrape_subreddit(config):
     print(f"Found {found} target posts for {config['name']}")
     save_corpus(corpus, config["output_file"])
 
-
 def is_stocks_daily_discussion(post):
-    """Return True if the post is a r/stocks Daily Discussion thread."""
     title_lower = post.get("title", "").lower()
     return "daily discussion" in title_lower and (
         "r/stocks" in title_lower or "r -" in title_lower or post.get("author") == "AutoModerator"
     )
 
-
 def is_wsb_moves_thread(post):
-    """Return True if the post is a WSB 'What Are Your Moves Tomorrow' thread."""
     title_lower = post.get("title", "").lower()
     return "what are your moves tomorrow" in title_lower
-
 
 def scrape_stocks_daily(num_discussion_posts=5):
     """Scrape r/stocks Daily Discussion threads and save corpus."""
@@ -204,7 +188,6 @@ def scrape_stocks_daily(num_discussion_posts=5):
     }
     scrape_subreddit(config)
 
-
 def scrape_wsb(num_moves_posts=5):
     """Scrape WSB 'What Are Your Moves Tomorrow' threads and save corpus."""
     config = {
@@ -217,7 +200,6 @@ def scrape_wsb(num_moves_posts=5):
         "is_target_post": is_wsb_moves_thread,
     }
     scrape_subreddit(config)
-
 
 if __name__ == "__main__":
     # scrape_wsb(num_moves_posts=500)
