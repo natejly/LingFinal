@@ -41,4 +41,4 @@ Run backtests (saves JSON):
 python sentiment_backtest.py
 ```
 
-Run the notebook (`results.ipynb`):
+Run the notebook for analysis(`results.ipynb`):
