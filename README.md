@@ -1,3 +1,7 @@
+## PDF
+
+[Open Ling.pdf](./Ling.pdf)
+
 ## Project structure
 
 ### Top-level
