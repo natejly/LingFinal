@@ -1,6 +1,7 @@
 ## PDF
 
 [Open Ling.pdf](./Ling.pdf)
+<iframe src="./Ling.pdf" width="100%" height="600"></iframe>
 
 ## Project structure
 
