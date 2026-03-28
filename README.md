@@ -1,4 +1,4 @@
-## PDF
+## Paper Link
 
 [Paper](./Ling.pdf)
 
